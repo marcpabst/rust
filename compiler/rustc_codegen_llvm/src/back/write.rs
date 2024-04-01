@@ -808,7 +808,7 @@ unsafe fn create_call<'a>(tgt: &'a Value, src: &'a Value, rev_mode: bool,
         let fnc1 = llvm::LLVMGetNamedFunction(llmod, cname1.as_ptr() as *const c_char);
         let call;
         if fnc1.is_none() {
-            let fnc2 = llvm::LLVMGetNamedFunction(llmod, cname1.as_ptr() as *const c_char);
+            let fnc2 = llvm::LLVMGetNamedFunction(llmod, cname2.as_ptr() as *const c_char);
             assert!(fnc2.is_some());
             let fnc2 = fnc2.unwrap();
             let ty = LLVMRustGetFunctionType(fnc2);
