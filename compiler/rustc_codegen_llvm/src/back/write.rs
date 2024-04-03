@@ -703,7 +703,7 @@ fn get_params(fnc: &Value) -> Vec<&Value> {
 
 unsafe fn create_call<'a>(tgt: &'a Value, src: &'a Value, rev_mode: bool,
     llmod: &'a llvm::Module, llcx: &llvm::Context, size_positions: &[usize]) {
-    dbg!("size_positions: {:?}", size_positions);
+
    // first, remove all calls from fnc
    let bb = LLVMGetFirstBasicBlock(tgt);
    let br = LLVMRustGetTerminator(bb);
@@ -843,7 +843,6 @@ unsafe fn create_call<'a>(tgt: &'a Value, src: &'a Value, rev_mode: bool,
 
     // Now clean up placeholder code.
     LLVMRustEraseInstBefore(bb, last_inst);
-    //dbg!(&tgt);
 
     let f_return_type = LLVMGetReturnType(LLVMGlobalGetValueType(src));
     let void_type = LLVMVoidTypeInContext(llcx);
@@ -865,6 +864,7 @@ unsafe fn create_call<'a>(tgt: &'a Value, src: &'a Value, rev_mode: bool,
     let _fnc_ok =
         LLVMVerifyFunction(tgt, llvm::LLVMVerifierFailureAction::LLVMAbortProcessAction);
 }
+
 unsafe fn get_panic_name(llmod: &llvm::Module) -> CString {
     // The names are mangled and their ending changes based on a hash, so just take whichever.
     let mut f = LLVMGetFirstFunction(llmod);
@@ -922,21 +922,7 @@ unsafe fn add_panic_msg_to_global<'a>(llmod: &'a llvm::Module, llcx: &'a llvm::C
     LLVMRustSetLinkage(global_var, Linkage::PrivateLinkage);
     LLVMSetInitializer(global_var, struct_initializer);
 
-        //let msg_global_name = "ad_safety_msg".to_string();
-        //let cmsg_global_name = CString::new(msg_global_name).unwrap();
-        //let msg = "autodiff safety check failed!";
-        //let cmsg = CString::new(msg).unwrap();
-        //let msg_len = msg.len();
-        //let i8_array_type = llvm::LLVMRustArrayType(llvm::LLVMInt8TypeInContext(llcx), msg_len as u64);
-        //let global_type  = llvm::LLVMStructTypeInContext(llcx, [i8_array_type].as_mut_ptr(), 1, 0);
-        //let string_const_val = llvm::LLVMConstStringInContext(llcx, cmsg.as_ptr() as *const c_char, msg_len as u32, 0);
-        //let initializer = llvm::LLVMConstStructInContext(llcx, [string_const_val].as_mut_ptr(), 1, 0);
-        //let global = llvm::LLVMAddGlobal(llmod, global_type, cmsg_global_name.as_ptr() as *const c_char);
-        //llvm::LLVMRustSetLinkage(global, llvm::Linkage::PrivateLinkage);
-        //llvm::LLVMSetInitializer(global, initializer);
-        //llvm::LLVMSetUnnamedAddress(global, llvm::UnnamedAddr::Global);
-
-        global_var
+    global_var
 }
 
 // As unsafe as it can be.
@@ -947,6 +933,7 @@ pub(crate) unsafe fn enzyme_ad(
     llcx: &llvm::Context,
     diag_handler: &DiagCtxt,
     item: AutoDiffItem,
+    logic_ref: EnzymeLogicRef,
 ) -> Result<(), FatalError> {
     let autodiff_mode = item.attrs.mode;
     let rust_name = item.source;
@@ -1001,13 +988,6 @@ pub(crate) unsafe fn enzyme_ad(
         item.inputs.into_iter().map(|x| to_enzyme_typetree(x, llvm_data_layout, llcx)).collect();
     let output_tt = to_enzyme_typetree(item.output, llvm_data_layout, llcx);
 
-    let mut fnc_opt = false;
-    if std::env::var("ENZYME_ENABLE_FNC_OPT").is_ok() {
-        dbg!("Disabling optimizations for Enzyme");
-        fnc_opt = true;
-    }
-
-    let logic_ref: EnzymeLogicRef = CreateEnzymeLogic(fnc_opt as u8);
     let type_analysis: EnzymeTypeAnalysisRef =
         CreateTypeAnalysis(logic_ref, std::ptr::null_mut(), std::ptr::null_mut(), 0);
 
@@ -1026,7 +1006,18 @@ pub(crate) unsafe fn enzyme_ad(
         llvm::set_print(true);
     }
 
-    let mut tmp = match item.attrs.mode {
+    let mode = match autodiff_mode {
+        DiffMode::Forward => DiffMode::Forward,
+        DiffMode::Reverse => DiffMode::Reverse,
+        DiffMode::ForwardFirst => DiffMode::Forward,
+        DiffMode::ReverseFirst => DiffMode::Reverse,
+        _ => unreachable!(),
+    };
+
+    let void_type = LLVMVoidTypeInContext(llcx);
+    let return_type = LLVMGetReturnType(LLVMGlobalGetValueType(src_fnc));
+    let void_ret = void_type == return_type;
+    let mut tmp = match mode {
         DiffMode::Forward => enzyme_rust_forward_diff(
             logic_ref,
             type_analysis,
@@ -1035,6 +1026,7 @@ pub(crate) unsafe fn enzyme_ad(
             ret_activity,
             input_tts,
             output_tt,
+            void_ret,
         ),
         DiffMode::Reverse => enzyme_rust_reverse_diff(
             logic_ref,
@@ -1052,7 +1044,6 @@ pub(crate) unsafe fn enzyme_ad(
 
     let f_return_type = LLVMGetReturnType(LLVMGlobalGetValueType(res));
 
-    let void_type = LLVMVoidTypeInContext(llcx);
     let rev_mode = item.attrs.mode == DiffMode::Reverse;
     create_call(target_fnc, res, rev_mode, llmod, llcx, &size_positions);
     // TODO: implement drop for wrapper type?
@@ -1114,8 +1105,40 @@ pub(crate) unsafe fn differentiate(
     }
 
     let differentiate = !diff_items.is_empty();
+    let mut first_order_items: Vec<AutoDiffItem> = vec![];
+    let mut higher_order_items: Vec<AutoDiffItem> = vec![];
     for item in diff_items {
-        let res = enzyme_ad(llmod, llcx, &diag_handler, item);
+        if item.attrs.mode == DiffMode::ForwardFirst || item.attrs.mode == DiffMode::ReverseFirst{
+            first_order_items.push(item);
+        } else {
+            // default
+            higher_order_items.push(item);
+        }
+    }
+
+    let mut fnc_opt = false;
+    if std::env::var("ENZYME_ENABLE_FNC_OPT").is_ok() {
+        dbg!("Enable extra optimizations for Enzyme");
+        fnc_opt = true;
+    }
+
+    // If a function is a base for some higher order ad, always optimize
+    let fnc_opt_base = true;
+    let logic_ref_opt: EnzymeLogicRef = CreateEnzymeLogic(fnc_opt_base as u8);
+
+    for item in first_order_items {
+        let res = enzyme_ad(llmod, llcx, &diag_handler, item, logic_ref_opt);
+        assert!(res.is_ok());
+    }
+
+    // For the rest, follow the user choice on debug vs release.
+    // Reuse the opt one if possible for better compile time (Enzyme internal caching).
+    let logic_ref = match fnc_opt {
+        true => logic_ref_opt,
+        false => CreateEnzymeLogic(fnc_opt as u8),
+    };
+    for item in higher_order_items {
+        let res = enzyme_ad(llmod, llcx, &diag_handler, item, logic_ref);
         assert!(res.is_ok());
     }
 
