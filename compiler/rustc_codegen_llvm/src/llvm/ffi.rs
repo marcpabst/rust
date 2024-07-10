@@ -1022,6 +1022,13 @@ extern "C" {
     // EraseFromParent doesn't exist :(
     //pub fn LLVMEraseFromParent(BB: &BasicBlock) -> &Value;
     // Enzyme
+    pub fn LLVMRustAddFncParamAttr<'a>(
+        Instr: &'a Value,
+        index: c_uint,
+        Attr: &'a Attribute
+    );
+
+    pub fn LLVMRustAddRetAttr(V: &Value, attr: AttributeKind);
     pub fn LLVMRustRemoveFncAttr(V: &Value, attr: AttributeKind);
     pub fn LLVMRustHasDbgMetadata(I: &Value) -> bool;
     pub fn LLVMRustHasMetadata(I: &Value, KindID: c_uint) -> bool;
