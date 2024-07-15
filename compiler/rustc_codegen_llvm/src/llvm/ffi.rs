@@ -848,8 +848,8 @@ pub(crate) unsafe fn enzyme_rust_forward_diff(
     fnc: &Value,
     input_diffactivity: Vec<DiffActivity>,
     ret_diffactivity: DiffActivity,
-    input_tts: Vec<TypeTree>,
-    output_tt: TypeTree,
+    _input_tts: Vec<TypeTree>,
+    _output_tt: TypeTree,
     void_ret: bool,
 ) -> (&Value, Vec<usize>) {
     let ret_activity = cdiffe_from(ret_diffactivity);
@@ -878,13 +878,12 @@ pub(crate) unsafe fn enzyme_rust_forward_diff(
     };
     trace!("ret_primary_ret: {}", &ret_primary_ret);
 
-    let mut args_tree = input_tts.iter().map(|x| x.inner).collect::<Vec<_>>();
+    //let mut args_tree = input_tts.iter().map(|x| x.inner).collect::<Vec<_>>();
     //let mut args_tree = vec![TypeTree::new().inner; typetree.input_tt.len()];
 
     // We don't support volatile / extern / (global?) values.
     // Just because I didn't had time to test them, and it seems less urgent.
-    let args_uncacheable = vec![0; input_tts.len()];
-    assert!(args_uncacheable.len() == input_activity.len());
+    let args_uncacheable = vec![0; input_activity.len()];
     let num_fnc_args = LLVMCountParams(fnc);
     trace!("num_fnc_args: {}", num_fnc_args);
     trace!("input_activity.len(): {}", input_activity.len());
@@ -894,9 +893,16 @@ pub(crate) unsafe fn enzyme_rust_forward_diff(
 
     let mut known_values = vec![kv_tmp; input_activity.len()];
 
+    let tree_tmp = TypeTree::new();
+    let mut args_tree = vec![tree_tmp.inner; input_activity.len()];
+
+    //let mut args_tree = vec![std::ptr::null_mut(); input_activity.len()];
+    //let ret_tt = std::ptr::null_mut();
+    //let mut args_tree = vec![TypeTree::new().inner; input_tts.len()];
+    let ret_tt = TypeTree::new();
     let dummy_type = CFnTypeInfo {
         Arguments: args_tree.as_mut_ptr(),
-        Return: output_tt.inner.clone(),
+        Return: ret_tt.inner,
         KnownValues: known_values.as_mut_ptr(),
     };
 
@@ -935,7 +941,7 @@ pub(crate) unsafe fn enzyme_rust_reverse_diff(
     rust_input_activity: Vec<DiffActivity>,
     ret_activity: DiffActivity,
     input_tts: Vec<TypeTree>,
-    output_tt: TypeTree,
+    _output_tt: TypeTree,
 ) -> (&Value, Vec<usize>) {
     let (primary_ret, ret_activity) = match ret_activity {
         DiffActivity::Const => (true, CDIFFE_TYPE::DFT_CONSTANT),
@@ -961,16 +967,11 @@ pub(crate) unsafe fn enzyme_rust_reverse_diff(
         input_activity.push(cdiffe_from(x));
     }
 
-    let mut args_tree = input_tts.iter().map(|x| x.inner).collect::<Vec<_>>();
+    //let args_tree = input_tts.iter().map(|x| x.inner).collect::<Vec<_>>();
 
     // We don't support volatile / extern / (global?) values.
     // Just because I didn't had time to test them, and it seems less urgent.
-    let args_uncacheable = vec![0; input_tts.len()];
-    if args_uncacheable.len() != input_activity.len() {
-        dbg!("args_uncacheable.len(): {}", args_uncacheable.len());
-        dbg!("input_activity.len(): {}", input_activity.len());
-    }
-    assert!(args_uncacheable.len() == input_activity.len());
+    let args_uncacheable = vec![0; input_activity.len()];
     let num_fnc_args = LLVMCountParams(fnc);
     println!("num_fnc_args: {}", num_fnc_args);
     println!("input_activity.len(): {}", input_activity.len());
@@ -979,9 +980,15 @@ pub(crate) unsafe fn enzyme_rust_reverse_diff(
 
     let mut known_values = vec![kv_tmp; input_tts.len()];
 
+    let tree_tmp = TypeTree::new();
+    let mut args_tree = vec![tree_tmp.inner; input_tts.len()];
+    //let mut args_tree = vec![TypeTree::new().inner; input_tts.len()];
+    let ret_tt = TypeTree::new();
+    //let mut args_tree = vec![std::ptr::null_mut(); input_tts.len()];
+    //let ret_tt = std::ptr::null_mut();
     let dummy_type = CFnTypeInfo {
         Arguments: args_tree.as_mut_ptr(),
-        Return: output_tt.inner.clone(),
+        Return: ret_tt.inner,
         KnownValues: known_values.as_mut_ptr(),
     };
 
@@ -1023,12 +1030,12 @@ extern "C" {
     //pub fn LLVMEraseFromParent(BB: &BasicBlock) -> &Value;
     // Enzyme
     pub fn LLVMRustAddFncParamAttr<'a>(
-        Instr: &'a Value,
+        F: &'a Value,
         index: c_uint,
         Attr: &'a Attribute
     );
 
-    pub fn LLVMRustAddRetAttr(V: &Value, attr: AttributeKind);
+    pub fn LLVMRustAddRetFncAttr(F: &Value, attr: &Attribute);
     pub fn LLVMRustRemoveFncAttr(V: &Value, attr: AttributeKind);
     pub fn LLVMRustHasDbgMetadata(I: &Value) -> bool;
     pub fn LLVMRustHasMetadata(I: &Value, KindID: c_uint) -> bool;
