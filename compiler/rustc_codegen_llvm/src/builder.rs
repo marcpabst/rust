@@ -8,6 +8,7 @@ use crate::type_::Type;
 use crate::type_of::LayoutLlvmExt;
 use crate::value::Value;
 use libc::{c_char, c_uint};
+use rustc_ast::expand::autodiff_attrs::{AutoDiffAttrs, DiffActivity};
 use rustc_codegen_ssa::common::{IntPredicate, RealPredicate, SynchronizationScope, TypeKind};
 use rustc_codegen_ssa::mir::operand::{OperandRef, OperandValue};
 use rustc_codegen_ssa::mir::place::PlaceRef;
@@ -30,6 +31,7 @@ use std::iter;
 use std::ops::Deref;
 use std::ptr;
 
+use rustc_ast::expand::autodiff_attrs::DiffMode;
 use crate::typetree::to_enzyme_typetree;
 use rustc_ast::expand::typetree::{TypeTree, FncTree};
 
@@ -136,6 +138,7 @@ macro_rules! builder_methods_for_value_instructions {
         })+
     }
 }
+
 pub fn add_tt2<'ll>(llmod: &'ll llvm::Module, llcx: &'ll llvm::Context, fn_def: &'ll Value, tt: FncTree) {
     let inputs = tt.args;
     let ret_tt: TypeTree = tt.ret;
@@ -178,6 +181,107 @@ pub fn add_tt2<'ll>(llmod: &'ll llvm::Module, llcx: &'ll llvm::Context, fn_def: 
     unsafe {
         llvm::LLVMRustAddRetFncAttr(fn_def, ret_attr);
     }
+}
+
+#[allow(unused)]
+pub fn add_opt_dbg_helper<'ll>(llmod: &'ll llvm::Module, llcx: &'ll llvm::Context, val: &'ll Value, attrs: AutoDiffAttrs, i: usize) {
+    //pub mode: DiffMode,
+    //pub ret_activity: DiffActivity,
+    //pub input_activity: Vec<DiffActivity>,
+    let inputs = attrs.input_activity;
+    let outputs = attrs.ret_activity;
+    let ad_name = match attrs.mode {
+        DiffMode::Forward => "__enzyme_fwddiff",
+        DiffMode::Reverse => "__enzyme_autodiff",
+        DiffMode::ForwardFirst => "__enzyme_fwddiff",
+        DiffMode::ReverseFirst => "__enzyme_autodiff",
+        _ => panic!("Why are we here?"),
+    };
+
+    // Assuming that our val is the fnc square, want to generate the following llvm-ir:
+    // declare double @__enzyme_autodiff(...)
+    //
+    // define double @dsquare(double %x) {
+    // entry:
+    //   %0 = tail call double (...) @__enzyme_autodiff(double (double)* nonnull @square, double %x)
+    //   ret double %0
+    // }
+
+    let mut final_num_args;
+    unsafe {
+        let fn_ty = llvm::LLVMRustGetFunctionType(val);
+        let ret_ty = llvm::LLVMGetReturnType(fn_ty);
+
+        // First we add the declaration of the __enzyme function
+        let enzyme_ty = llvm::LLVMFunctionType(ret_ty, ptr::null(), 0, True);
+        let ad_fn = llvm::LLVMRustGetOrInsertFunction(
+            llmod,
+            ad_name.as_ptr() as *const c_char,
+            ad_name.len().try_into().unwrap(),
+            enzyme_ty,
+        );
+
+        let wrapper_name = String::from("enzyme_opt_helper_") + i.to_string().as_str();
+        let wrapper_fn = llvm::LLVMRustGetOrInsertFunction(
+            llmod,
+            wrapper_name.as_ptr() as *const c_char,
+            wrapper_name.len().try_into().unwrap(),
+            fn_ty,
+        );
+        let entry = llvm::LLVMAppendBasicBlockInContext(llcx, wrapper_fn, "entry".as_ptr() as *const c_char);
+        let builder = llvm::LLVMCreateBuilderInContext(llcx);
+        llvm::LLVMPositionBuilderAtEnd(builder, entry);
+        let num_args = llvm::LLVMCountParams(wrapper_fn);
+        let mut args = Vec::with_capacity(num_args as usize + 1);
+        args.push(val);
+        // metadata !"enzyme_const"
+        let enzyme_const = llvm::LLVMMDStringInContext(llcx, "enzyme_const".as_ptr() as *const c_char, 12);
+        let enzyme_out = llvm::LLVMMDStringInContext(llcx, "enzyme_out".as_ptr() as *const c_char, 10);
+        let enzyme_dup = llvm::LLVMMDStringInContext(llcx, "enzyme_dup".as_ptr() as *const c_char, 10);
+        let enzyme_dupnoneed = llvm::LLVMMDStringInContext(llcx, "enzyme_dupnoneed".as_ptr() as *const c_char, 16);
+        final_num_args = num_args * 2 + 1;
+        for i in 0..num_args {
+            let arg = llvm::LLVMGetParam(wrapper_fn, i);
+            let activity = inputs[i as usize];
+            let (activity, duplicated): (&Value, bool) = match activity {
+                DiffActivity::None => panic!(),
+                DiffActivity::Const => (enzyme_const, false),
+                DiffActivity::Active => (enzyme_out, false),
+                DiffActivity::ActiveOnly => (enzyme_out, false),
+                DiffActivity::Dual => (enzyme_dup, true),
+                DiffActivity::DualOnly => (enzyme_dupnoneed, true),
+                DiffActivity::Duplicated => (enzyme_dup, true),
+                DiffActivity::DuplicatedOnly => (enzyme_dupnoneed, true),
+                DiffActivity::FakeActivitySize => (enzyme_const, false),
+            };
+            args.push(activity);
+            args.push(arg);
+            if duplicated {
+                final_num_args += 1;
+                args.push(arg);
+            }
+        }
+
+        // declare void @__enzyme_autodiff(...)
+
+        // define void @enzyme_opt_helper_0(ptr %0, ptr %1) {
+        //   call void (...) @__enzyme_autodiff(ptr @ffff, ptr %0, ptr %1)
+        //   ret void
+        // }
+
+        let call = llvm::LLVMBuildCall2(builder, enzyme_ty, ad_fn, args.as_mut_ptr(), final_num_args as usize, ad_name.as_ptr() as *const c_char);
+        let void_ty = llvm::LLVMVoidTypeInContext(llcx);
+        if llvm::LLVMTypeOf(call) != void_ty {
+            llvm::LLVMBuildRet(builder, call);
+        } else {
+            llvm::LLVMBuildRetVoid(builder);
+        }
+        llvm::LLVMDisposeBuilder(builder);
+
+        let _fnc_ok =
+            llvm::LLVMVerifyFunction(wrapper_fn, llvm::LLVMVerifierFailureAction::LLVMAbortProcessAction);
+    }
+
 }
 
 fn add_tt<'ll>(llmod: &'ll llvm::Module, llcx: &'ll llvm::Context,val: &'ll Value, tt: FncTree) {
