@@ -759,7 +759,11 @@ impl Build {
     /// Component directory that Cargo will produce output into (e.g.
     /// release/debug)
     fn cargo_dir(&self) -> &'static str {
-        if self.config.rust_optimize.is_release() { "release" } else { "debug" }
+        if self.config.rust_optimize.is_release() {
+            "release"
+        } else {
+            "debug"
+        }
     }
 
     fn tools_dir(&self, compiler: Compiler) -> PathBuf {
@@ -1602,6 +1606,7 @@ impl Build {
             return;
         }
         let _ = fs::remove_file(&dst);
+        dbg!(src);
         let metadata = t!(src.symlink_metadata());
         let mut src = src.to_path_buf();
         if metadata.file_type().is_symlink() {
@@ -1732,7 +1737,11 @@ impl Build {
         use std::os::unix::fs::symlink as symlink_file;
         #[cfg(windows)]
         use std::os::windows::fs::symlink_file;
-        if !self.config.dry_run() { symlink_file(src.as_ref(), link.as_ref()) } else { Ok(()) }
+        if !self.config.dry_run() {
+            symlink_file(src.as_ref(), link.as_ref())
+        } else {
+            Ok(())
+        }
     }
 
     /// Returns if config.ninja is enabled, and checks for ninja existence,

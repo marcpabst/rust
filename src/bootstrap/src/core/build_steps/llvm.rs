@@ -480,7 +480,11 @@ impl Step for Llvm {
 
         let llvm_version_suffix = if let Some(ref suffix) = builder.config.llvm_version_suffix {
             // Allow version-suffix="" to not define a version suffix at all.
-            if !suffix.is_empty() { Some(suffix.to_string()) } else { None }
+            if !suffix.is_empty() {
+                Some(suffix.to_string())
+            } else {
+                None
+            }
         } else if builder.config.channel == "dev" {
             // Changes to a version suffix require a complete rebuild of the LLVM.
             // To avoid rebuilds during a time of version bump, don't include rustc
@@ -894,7 +898,7 @@ impl Step for Enzyme {
             .profile(profile)
             .env("LLVM_CONFIG_REAL", &llvm_config)
             .define("LLVM_ENABLE_ASSERTIONS", "ON")
-            .define("ENZYME_EXTERNAL_SHARED_LIB", "OFF")
+            .define("ENZYME_EXTERNAL_SHARED_LIB", "ON")
             .define("LLVM_DIR", &llvm_cmake_dir);
 
         cfg.build();
@@ -1214,9 +1218,12 @@ impl HashStamp {
             Ok(h) => {
                 let unwrapped = self.hash.as_deref().unwrap_or(b"");
                 let res = unwrapped == h.as_slice();
-                eprintln!("Result for {:?}: {res:?} for expected '{unwrapped:?}' and read '{h:?}'", self.path);
+                eprintln!(
+                    "Result for {:?}: {res:?} for expected '{unwrapped:?}' and read '{h:?}'",
+                    self.path
+                );
                 res
-            },
+            }
             Err(e) if e.kind() == io::ErrorKind::NotFound => false,
             Err(e) => {
                 panic!("failed to read stamp file `{}`: {}", self.path.display(), e);
